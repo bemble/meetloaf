@@ -346,27 +346,38 @@ function applyWindowPrefs() {
 // dark theme for Meet on the web, and the page ignores prefers-color-scheme
 // even though Electron passes the OS setting through. Rather than maintain a
 // hand-written stylesheet against Meet's ever-changing class names, Dark
-// Reader's dynamic engine (MIT) is injected into the page and derives a dark
-// theme from Meet's own styles at runtime. It's enabled whenever the OS is in
-// dark mode and we're not connected to a call — the in-call UI is already dark
-// and is left alone, as are <video> elements everywhere.
+// Reader's dynamic engine (MIT) runs in the page and derives a dark theme from
+// Meet's own styles at runtime. It's enabled whenever the OS is in dark mode
+// and we're not connected to a call — the in-call UI is already dark and is
+// left alone, as are <video> elements everywhere.
+//
+// Dark Reader lives in the preload (main-preload.js), which is the only hook
+// that runs before Meet's first paint; anything later flashes the page light
+// on every load. Main owns the decision and pushes it to the preload; the
+// preload owns Dark Reader and the theme constants.
 
-const DARKREADER_SRC = fs.readFileSync(require.resolve('darkreader/darkreader.js'), 'utf8');
-// Dark Reader fetches stylesheets to analyse them; the page's own fetch is the
-// right one here (the default is meant for the extension's background page).
-const DARKREADER_BOOT = `${DARKREADER_SRC}\n;window.DarkReader && window.DarkReader.setFetchMethod(window.fetch);`;
-
-const MEET_DARK_THEME = { mode: 1, brightness: 100, contrast: 100, sepia: 0, grayscale: 0 };
-// Dark Reader also injects a small <script> to proxy CSSOM rule insertion and
-// custom-element registration. Meet enforces Trusted Types, which blocks that
-// script, and Meet styles through <style> elements anyway, so the proxies are
-// switched off here. The injection attempt itself is unconditional and still
-// logs two Trusted Types errors in the page console per enable; harmless.
-const MEET_DARK_FIXES = {
-  invert: [], css: '', ignoreInlineStyle: [], ignoreImageAnalysis: [], ignoreCSSUrl: [],
-  disableStyleSheetsProxy: true,
-  disableCustomElementRegistryProxy: true
-};
+// A sandboxed preload can't read files, and Electron only takes a preload as a
+// path, so the real preload is assembled here at launch: Dark Reader's source
+// in front of main-preload.js, written to userData. Dark Reader's UMD wrapper
+// is steered to its browser-global branch by shadowing the CommonJS names.
+let meetPreloadPath = null;
+function buildMeetPreload() {
+  if (meetPreloadPath) return meetPreloadPath;
+  const plain = path.join(__dirname, 'main-preload.js');
+  try {
+    const darkReader = fs.readFileSync(require.resolve('darkreader/darkreader.js'), 'utf8');
+    const preload = fs.readFileSync(plain, 'utf8');
+    const bundle = `;(function () {\nvar module, exports, define;\n${darkReader}\n}).call(window);\n${preload}`;
+    const out = path.join(app.getPath('userData'), 'meet-preload.js');
+    fs.writeFileSync(out, bundle);
+    meetPreloadPath = out;
+  } catch (err) {
+    // Without the bundle the preload still runs, just without a dark theme.
+    console.warn('Dark theme preload could not be built:', err.message);
+    meetPreloadPath = plain;
+  }
+  return meetPreloadPath;
+}
 
 function meetDarkThemeEnabled() {
   return config.window?.meetDarkTheme !== false;
@@ -396,33 +407,15 @@ function mainWindowBackground() {
   return meetDarkThemeEnabled() && nativeTheme.shouldUseDarkColors ? '#181a1b' : '#ffffff';
 }
 
-// Idempotent: enables or disables Dark Reader in the page to match the current
-// want. Safe to call often — every trigger (page load, OS theme change, call
-// phase change, settings save) goes through here.
+// Pushes the current want to the preload, which enables or disables Dark
+// Reader to match. Idempotent on both ends — every trigger (OS theme change,
+// call phase change, settings save) goes through here.
 function applyMeetTheme() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const wc = mainWindow.webContents;
   if (!meetThemeHost(wc.getURL())) return;
-  const want = meetDarkWanted();
   mainWindow.setBackgroundColor(mainWindowBackground());
-  wc.executeJavaScript(`(() => {
-    const dr = window.DarkReader;
-    if (!dr) return;
-    if (${want}) { if (!dr.isEnabled()) dr.enable(${JSON.stringify(MEET_DARK_THEME)}, ${JSON.stringify(MEET_DARK_FIXES)}); }
-    else if (dr.isEnabled()) dr.disable();
-  })()`).catch(() => {});
-}
-
-// Called at dom-ready: loads Dark Reader into the page, then applies the
-// current want. Loaded even in light mode so a later switch to dark applies
-// live, without a reload.
-function bootMeetTheme() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  const wc = mainWindow.webContents;
-  if (!meetThemeHost(wc.getURL())) return;
-  wc.executeJavaScript(DARKREADER_BOOT)
-    .then(() => applyMeetTheme())
-    .catch((err) => console.warn('Dark theme injection failed:', err.message));
+  wc.send('main:meet-dark', meetDarkWanted());
 }
 
 // ─── Presentation pop-out window ───────────────────────────────────────────
@@ -1016,6 +1009,14 @@ ipcMain.on('main:meeting-phase', (e, raw) => {
   observePhase(typeof raw === 'string' ? raw : 'unknown', 'dom');
 });
 
+// The preload asks this, synchronously, as each Meet document is created —
+// before its first paint. Only the Meet window gets a dark theme; popups it
+// opens inherit the preload but are answered "no".
+ipcMain.on('main:meet-dark-wanted', (e) => {
+  e.returnValue = !!mainWindow && !mainWindow.isDestroyed() &&
+    e.sender === mainWindow.webContents && meetDarkWanted();
+});
+
 // Triggered by the injected "MeetLoaf Settings" link in Meet's own modal.
 ipcMain.on('main:open-settings', () => openSettingsWindow());
 ipcMain.on('main:present-tab', () => presentInBrowser());
@@ -1479,7 +1480,7 @@ function createWindow() {
     backgroundColor: mainWindowBackground(),
     alwaysOnTop: !!config.window?.alwaysOnTop,
     webPreferences: {
-      preload: path.join(__dirname, 'main-preload.js'),
+      preload: buildMeetPreload(),
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false
@@ -1541,7 +1542,6 @@ function createWindow() {
     if (IS_MAC) mainWindow.webContents.insertCSS(DRAG_REGION_CSS).catch(() => {});
     syncPresentTabToPage();
     mainWindow.webContents.executeJavaScript(MEET_INJECTION).catch(() => {});
-    bootMeetTheme();
   });
 
   mainWindow.on('close', (e) => {
