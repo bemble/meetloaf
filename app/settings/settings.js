@@ -344,6 +344,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Dark theme for Meet — same `window` section. Default on.
+  const meetDarkBtn = document.getElementById('meetDarkTheme');
+  if (meetDarkBtn) {
+    meetDarkBtn.classList.toggle('checked', cfg.window?.meetDarkTheme !== false);
+    meetDarkBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const next = !meetDarkBtn.classList.contains('checked');
+      meetDarkBtn.classList.toggle('checked', next);
+      state.raw.window = { ...(state.raw.window || {}), meetDarkTheme: next };
+      persistRaw();
+    });
+  }
+
   // Permissions tab. Rows come from the main process, which decides what
   // applies to this platform — the renderer only draws what it's handed, so
   // there's one place that knows Windows has no Local Network permission.

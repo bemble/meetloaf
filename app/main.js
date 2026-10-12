@@ -150,7 +150,9 @@ const WINDOW_DEFAULTS = {
   popOutPresentation: true,
   presentBrowserTab: true,
   // macOS only: run as a menu-bar app with no Dock icon. Ignored elsewhere.
-  hideDock: false
+  hideDock: false,
+  // Darken Meet's home page and pre-join screen while the OS is in dark mode.
+  meetDarkTheme: true
 };
 
 function normalizeWindow(raw) {
@@ -162,6 +164,7 @@ function normalizeWindow(raw) {
   out.popOutPresentation = src.popOutPresentation !== false;
   out.presentBrowserTab = src.presentBrowserTab !== false;
   out.hideDock = src.hideDock === true;
+  out.meetDarkTheme = src.meetDarkTheme !== false;
   return out;
 }
 
@@ -276,6 +279,7 @@ function saveConfig(next) {
     };
     applyWindowPrefs();
     applyDockPrefs();
+    applyMeetTheme();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -334,6 +338,91 @@ function applyWindowPrefs() {
       settingsWindow.setAlwaysOnTop(aot, 'floating', 2);
     }
   }
+}
+
+// ─── Dark theme for Meet's home page ───────────────────────────────────────
+//
+// Meet's home page and pre-join screen only come in light; Google ships no
+// dark theme for Meet on the web, and the page ignores prefers-color-scheme
+// even though Electron passes the OS setting through. Rather than maintain a
+// hand-written stylesheet against Meet's ever-changing class names, Dark
+// Reader's dynamic engine (MIT) is injected into the page and derives a dark
+// theme from Meet's own styles at runtime. It's enabled whenever the OS is in
+// dark mode and we're not connected to a call — the in-call UI is already dark
+// and is left alone, as are <video> elements everywhere.
+
+const DARKREADER_SRC = fs.readFileSync(require.resolve('darkreader/darkreader.js'), 'utf8');
+// Dark Reader fetches stylesheets to analyse them; the page's own fetch is the
+// right one here (the default is meant for the extension's background page).
+const DARKREADER_BOOT = `${DARKREADER_SRC}\n;window.DarkReader && window.DarkReader.setFetchMethod(window.fetch);`;
+
+const MEET_DARK_THEME = { mode: 1, brightness: 100, contrast: 100, sepia: 0, grayscale: 0 };
+// Dark Reader also injects a small <script> to proxy CSSOM rule insertion and
+// custom-element registration. Meet enforces Trusted Types, which blocks that
+// script, and Meet styles through <style> elements anyway, so the proxies are
+// switched off here. The injection attempt itself is unconditional and still
+// logs two Trusted Types errors in the page console per enable; harmless.
+const MEET_DARK_FIXES = {
+  invert: [], css: '', ignoreInlineStyle: [], ignoreImageAnalysis: [], ignoreCSSUrl: [],
+  disableStyleSheetsProxy: true,
+  disableCustomElementRegistryProxy: true
+};
+
+function meetDarkThemeEnabled() {
+  return config.window?.meetDarkTheme !== false;
+}
+
+// Only Meet itself and the signed-out landing page it bounces to. Google's
+// sign-in pages render fine in dark mode on their own and are best not touched.
+function meetThemeHost(url) {
+  try {
+    const h = new URL(url).hostname;
+    return h === 'meet.google.com' || h === 'workspace.google.com';
+  } catch {
+    return false;
+  }
+}
+
+function meetDarkWanted() {
+  // phaseObserved rather than phase: the confirmation window that keeps Home
+  // Assistant from firing on a DOM blip would here mean a second of darkened
+  // in-call UI, and nothing is lost by switching early.
+  return meetDarkThemeEnabled() && nativeTheme.shouldUseDarkColors && phaseObserved !== 'in_call';
+}
+
+// Window background behind the page while it loads. Matching the theme avoids
+// a white flash in dark mode; Dark Reader's default dark background is close.
+function mainWindowBackground() {
+  return meetDarkThemeEnabled() && nativeTheme.shouldUseDarkColors ? '#181a1b' : '#ffffff';
+}
+
+// Idempotent: enables or disables Dark Reader in the page to match the current
+// want. Safe to call often — every trigger (page load, OS theme change, call
+// phase change, settings save) goes through here.
+function applyMeetTheme() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const wc = mainWindow.webContents;
+  if (!meetThemeHost(wc.getURL())) return;
+  const want = meetDarkWanted();
+  mainWindow.setBackgroundColor(mainWindowBackground());
+  wc.executeJavaScript(`(() => {
+    const dr = window.DarkReader;
+    if (!dr) return;
+    if (${want}) { if (!dr.isEnabled()) dr.enable(${JSON.stringify(MEET_DARK_THEME)}, ${JSON.stringify(MEET_DARK_FIXES)}); }
+    else if (dr.isEnabled()) dr.disable();
+  })()`).catch(() => {});
+}
+
+// Called at dom-ready: loads Dark Reader into the page, then applies the
+// current want. Loaded even in light mode so a later switch to dark applies
+// live, without a reload.
+function bootMeetTheme() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const wc = mainWindow.webContents;
+  if (!meetThemeHost(wc.getURL())) return;
+  wc.executeJavaScript(DARKREADER_BOOT)
+    .then(() => applyMeetTheme())
+    .catch((err) => console.warn('Dark theme injection failed:', err.message));
 }
 
 // ─── Presentation pop-out window ───────────────────────────────────────────
@@ -542,7 +631,9 @@ function phaseIsPresent(p) {
 // a momentary DOM blip cancels itself instead of firing automations.
 function observePhase(raw, source) {
   const next = effectivePhase(raw);
+  const observedChanged = next !== phaseObserved;
   phaseObserved = next;
+  if (observedChanged) applyMeetTheme();
   if (next === phase) {
     clearPhaseConfirm();
     return;
@@ -562,6 +653,7 @@ function commitPhase(next, reason) {
   clearPhaseConfirm();
   phase = next;
   phaseObserved = next;
+  applyMeetTheme();
 
   // Always-on-top tracks being *connected* — the lobby doesn't need to float,
   // regardless of when the user wants automations to fire.
@@ -1384,7 +1476,7 @@ function createWindow() {
         }
       : { autoHideMenuBar: true }),
     icon: IS_MAC ? undefined : path.join(__dirname, 'icon.png'),
-    backgroundColor: '#ffffff',
+    backgroundColor: mainWindowBackground(),
     alwaysOnTop: !!config.window?.alwaysOnTop,
     webPreferences: {
       preload: path.join(__dirname, 'main-preload.js'),
@@ -1449,6 +1541,7 @@ function createWindow() {
     if (IS_MAC) mainWindow.webContents.insertCSS(DRAG_REGION_CSS).catch(() => {});
     syncPresentTabToPage();
     mainWindow.webContents.executeJavaScript(MEET_INJECTION).catch(() => {});
+    bootMeetTheme();
   });
 
   mainWindow.on('close', (e) => {
@@ -2402,6 +2495,9 @@ if (!gotLock) {
         pendingDeepLink = normalizeMeetUrl(argvDeepLink);
       }
     }
+
+    // OS light/dark switches reach the page live, no reload.
+    nativeTheme.on('updated', () => applyMeetTheme());
 
     buildMenu();
     createWindow();
