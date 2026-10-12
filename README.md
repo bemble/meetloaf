@@ -231,6 +231,10 @@ On by default. Turn it off in **Settings → Window → Present a browser tab**,
 
 The Chrome extension lets `?companion=1` links through rather than handing them back to MeetLoaf, so this works with routing on. That needs extension 0.2.4 or later — reload the unpacked extension after updating.
 
+### Display stays awake in calls
+
+MeetLoaf keeps the display awake while you're connected to a call, so the screen doesn't sleep and lock mid-meeting when you're only listening — cameras off, or the window minimised — and haven't touched the keyboard or mouse in a while. Chromium already keeps the machine itself awake during a call, and the display while video is playing; this covers the rest. It's released the moment you leave the call. Not configurable.
+
 ### Setting up the Homebrew tap (one-time)
 
 The cask lives at [`packaging/homebrew/meetloaf.rb`](packaging/homebrew/meetloaf.rb) in this repo, and `.github/workflows/homebrew.yml` renders it into a tap whenever a release is **published**. Three things have to exist before it does anything:

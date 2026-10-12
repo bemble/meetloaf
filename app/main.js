@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut, session, dialog, shell, ipcMain, nativeTheme, desktopCapturer, clipboard, Notification, net, systemPreferences } = require('electron');
+const { app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut, session, dialog, shell, ipcMain, nativeTheme, desktopCapturer, clipboard, Notification, net, systemPreferences, powerSaveBlocker } = require('electron');
 
 const path = require('path');
 const fs = require('fs');
@@ -480,6 +480,31 @@ let phasePollTimer = null;
 // behaviour as a side effect.
 let haPresent = false;
 
+// ─── Keep the display awake while connected ───────────────────────────────
+// Chromium already keeps the *system* awake for as long as a call has active
+// peer connections, and the *display* awake while video is playing. The gap
+// is a call with no visible video — everyone's camera off, or the window
+// minimised or hidden while you listen — where Chromium drops its video wake
+// lock, so with hands off the keyboard and mouse the screen sleeps and locks
+// mid-meeting. Hold a display-sleep assertion for exactly as long as we're
+// connected. The blocker is tied to the `in_call` phase (not the lobby)
+// through commitPhase, so every exit path — leaving, navigating away,
+// renderer crash, quit — releases it.
+let sleepBlockerId = null;
+
+function setSleepBlocker(active) {
+  if (active) {
+    if (sleepBlockerId !== null && powerSaveBlocker.isStarted(sleepBlockerId)) return;
+    sleepBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+    console.log(`[meetloaf] sleep blocker on (#${sleepBlockerId})`);
+    return;
+  }
+  if (sleepBlockerId === null) return;
+  if (powerSaveBlocker.isStarted(sleepBlockerId)) powerSaveBlocker.stop(sleepBlockerId);
+  console.log(`[meetloaf] sleep blocker off (#${sleepBlockerId})`);
+  sleepBlockerId = null;
+}
+
 function clearPhaseConfirm() {
   if (phaseTimer) {
     clearTimeout(phaseTimer);
@@ -536,6 +561,7 @@ function commitPhase(next, reason) {
   if (connected !== inMeeting) {
     inMeeting = connected;
     applyWindowPrefs();
+    setSleepBlocker(connected);
   }
 
   const present = phaseIsPresent(next);
