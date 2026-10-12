@@ -329,6 +329,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Hide Dock icon — macOS only; the row stays hidden elsewhere.
+  const hideDockRow = document.getElementById('hideDockRow');
+  const hideDockBtn = document.getElementById('hideDock');
+  if (hideDockRow && hideDockBtn && IS_MAC) {
+    hideDockRow.hidden = false;
+    hideDockBtn.classList.toggle('checked', cfg.window?.hideDock === true);
+    hideDockBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const next = !hideDockBtn.classList.contains('checked');
+      hideDockBtn.classList.toggle('checked', next);
+      state.raw.window = { ...(state.raw.window || {}), hideDock: next };
+      persistRaw();
+    });
+  }
+
   // Permissions tab. Rows come from the main process, which decides what
   // applies to this platform — the renderer only draws what it's handed, so
   // there's one place that knows Windows has no Local Network permission.

@@ -148,7 +148,9 @@ const WINDOW_DEFAULTS = {
   height: 800,
   alwaysOnTop: false,
   popOutPresentation: true,
-  presentBrowserTab: true
+  presentBrowserTab: true,
+  // macOS only: run as a menu-bar app with no Dock icon. Ignored elsewhere.
+  hideDock: false
 };
 
 function normalizeWindow(raw) {
@@ -159,6 +161,7 @@ function normalizeWindow(raw) {
   out.alwaysOnTop = src.alwaysOnTop === true;
   out.popOutPresentation = src.popOutPresentation !== false;
   out.presentBrowserTab = src.presentBrowserTab !== false;
+  out.hideDock = src.hideDock === true;
   return out;
 }
 
@@ -272,9 +275,39 @@ function saveConfig(next) {
       homeAssistant: normalizeHomeAssistant(next.homeAssistant)
     };
     applyWindowPrefs();
+    applyDockPrefs();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
+  }
+}
+
+// macOS Dock icon. Hidden, MeetLoaf becomes an accessory app: menu-bar icon
+// and global shortcuts only, no Dock tile and no app menu bar. Cached like
+// AOT below — dock.hide()/show() flip the activation policy, which is not
+// something to do on every settings save.
+let lastAppliedDockHidden = null;
+
+function applyDockPrefs() {
+  if (!IS_MAC || !app.dock) return;
+  // Without a tray there'd be no way back to a hidden window once the Dock
+  // is gone too, so the Dock stays until the tray icon exists.
+  const hide = !!config.window?.hideDock && !!tray;
+  if (hide === lastAppliedDockHidden) return;
+  lastAppliedDockHidden = hide;
+  // Hiding the Dock pulls key status away from whichever of our windows had
+  // it (typically Settings, where the toggle lives), so hand it back.
+  const focused = BrowserWindow.getFocusedWindow();
+  if (hide) {
+    app.dock.hide();
+  } else {
+    // setActivationPolicy alone doesn't surface the Dock icon — dock.show()
+    // is what physically does it.
+    app.setActivationPolicy('regular');
+    app.dock.show();
+  }
+  if (focused && !focused.isDestroyed()) {
+    setTimeout(() => { if (!focused.isDestroyed()) focused.focus(); }, 50);
   }
 }
 
@@ -1422,7 +1455,8 @@ function createWindow() {
     if (app.isQuitting) return;
     // Hiding is only safe when something can bring the window back: the Dock
     // on macOS, the tray icon elsewhere. Without a tray on Windows/Linux a
-    // hidden window is unreachable, so treat close as quit instead.
+    // hidden window is unreachable, so treat close as quit instead. (On
+    // macOS the Dock is only hidden while a tray exists — see applyDockPrefs.)
     if (!IS_MAC && !tray) {
       app.isQuitting = true;
       app.quit();
@@ -2308,11 +2342,17 @@ if (!gotLock) {
   app.whenReady().then(() => {
     loadConfig();
 
-    // setActivationPolicy alone doesn't surface the dock icon — dock.show()
-    // is what physically does it. Single call at startup.
-    if (process.platform === 'darwin') {
+    // Start as a regular app, unless the Dock icon is configured away — that
+    // case is left to applyDockPrefs() below, once the tray exists to bring
+    // the window back. Not just an optimisation: dock.show() flips the
+    // activation policy asynchronously, so a show() followed by hide() in the
+    // same tick ends with the icon showing.
+    if (IS_MAC && !config.window?.hideDock) {
+      // setActivationPolicy alone doesn't surface the Dock icon — dock.show()
+      // is what physically does it.
       app.setActivationPolicy('regular');
       if (app.dock && typeof app.dock.show === 'function') app.dock.show();
+      lastAppliedDockHidden = false;
     }
 
     session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
@@ -2367,6 +2407,7 @@ if (!gotLock) {
     createWindow();
     applyWindowPrefs();
     createTray();
+    applyDockPrefs();
     registerShortcuts();
 
     // First-launch onboarding tour. Migrated configs are flagged

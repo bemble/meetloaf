@@ -196,7 +196,7 @@ Under the hood it writes `~/.config/meetloaf/config.json` (or `$XDG_CONFIG_HOME/
     "presentTab": "Cmd+Shift+P",
     "leave": { "accelerator": "Cmd+W", "global": false }
   },
-  "window": { "width": 1200, "height": 800, "popOutPresentation": true, "presentBrowserTab": true }
+  "window": { "width": 1200, "height": 800, "popOutPresentation": true, "presentBrowserTab": true, "hideDock": false }
 }
 ```
 
@@ -207,6 +207,10 @@ Under the hood it writes `~/.config/meetloaf/config.json` (or `$XDG_CONFIG_HOME/
 Hand-edits use [Electron's accelerator syntax](https://www.electronjs.org/docs/latest/api/accelerator). Each shortcut is `{ "accelerator": "…", "global": true|false }`; a bare string is treated as a global binding. Empty string = unbound. Restart the app after hand-editing.
 
 > **Note on Picture-in-Picture:** Meet's own *More options → Picture-in-picture* doesn't work inside MeetLoaf. It relies on the Document Picture-in-Picture API, which Electron doesn't render ([electron#39633](https://github.com/electron/electron/issues/39633)). The older per-video `requestPictureInPicture` API is wired up in Electron and renders for an ordinary video, but on Meet's remote WebRTC tiles it surfaces no window and the request never completes (the meeting keeps working — it doesn't crash). Both were tested and ruled out — MeetLoaf has no PiP. Use always-on-top (Settings → Window), or the presentation pop-out below, to keep things visible instead.
+
+### Hide the Dock icon (macOS)
+
+MeetLoaf can run as a menu-bar app with no Dock tile. Turn it on in **Settings → Window → Hide Dock icon**, or set `"window": { "hideDock": true }`. It takes effect immediately and no restart is needed. With the Dock icon gone there's no app menu bar either, so the window comes back from the menu-bar icon (left-click toggles it, right-click for the menu), the **Show / hide MeetLoaf** shortcut, or any Meet link routed to the app. Keyboard shortcuts keep working, including `⌘,` for Settings and `⌘Q` to quit. The Dock icon stays if the menu-bar icon can't be created, since there'd otherwise be no way back to a hidden window.
 
 ### Presentation pop-out
 
