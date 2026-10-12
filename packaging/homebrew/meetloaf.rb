@@ -37,8 +37,9 @@ cask "meetloaf" do
   ]
 
   caveats <<~EOS
-    MeetLoaf is ad-hoc signed rather than notarized, so macOS quarantines it by
-    default. Install with --no-quarantine, or run:
+    MeetLoaf is ad-hoc signed rather than notarized, so macOS will refuse to
+    open it until the quarantine flag is cleared. After installing, and again
+    after each upgrade, run:
 
       xattr -dr com.apple.quarantine "#{appdir}/MeetLoaf.app"
   EOS

@@ -39,12 +39,13 @@ No `xattr` step, and no Gatekeeper prompt. The quarantine flag that triggers the
 If the tap is set up (see below), this is the least-friction route — and `brew upgrade` keeps you current, which matters because macOS can't auto-update itself yet:
 
 ```bash
-brew install --cask shayredmond/tap/meetloaf --no-quarantine
+brew install --cask shayredmond/tap/meetloaf
+xattr -dr com.apple.quarantine /Applications/MeetLoaf.app
 ```
 
-`--no-quarantine` is required: MeetLoaf is ad-hoc signed rather than notarized, and Homebrew quarantines casks by default. Without it you'll get the same "damaged" error described above.
+The `xattr` line is required: MeetLoaf is ad-hoc signed rather than notarized, and Homebrew quarantines the apps it downloads. Without it you'll get the same "damaged" error described above. Homebrew used to offer `--no-quarantine` for this, but current versions reject the flag ([Homebrew/brew#20755](https://github.com/Homebrew/brew/issues/20755)).
 
-Later, `brew upgrade --cask meetloaf` picks up new releases.
+Later, `brew upgrade --cask meetloaf` picks up new releases. The upgraded app is quarantined again, so run the `xattr` line after each upgrade too.
 
 ### Windows 10/11
 
