@@ -464,15 +464,28 @@ function placeMainWindow() {
   const display = mainWindowDisplay();
   if (!display) return false;
   if (mainWindow.isFullScreen()) return false;
-  if (screen.getDisplayMatching(mainWindow.getBounds()).id === display.id) return false;
-  // Maximized fills whichever screen the window is on, so un-maximize, move,
-  // and maximize again over there.
-  const wasMaximized = mainWindow.isMaximized();
-  if (wasMaximized) mainWindow.unmaximize();
-  const { width, height } = mainWindow.getBounds();
-  mainWindow.setBounds(centeredBounds(display, width, height));
+  const bounds = mainWindow.getBounds();
+  const current = screen.getDisplayMatching(bounds);
+  if (current.id === display.id) return false;
+  // Maximized fills whichever screen the window is on, so a maximized window
+  // is moved at its configured size and maximized again over there.
+  // isMaximized() alone doesn't cut it on macOS: for a zoomed window it asks
+  // AppKit's isZoomed, which compares against a "standard frame" that doesn't
+  // always match what zoom produced, so a window filling its work area counts.
+  const wasMaximized = mainWindow.isMaximized() || fillsWorkArea(bounds, current.workArea);
+  if (mainWindow.isMaximized()) mainWindow.unmaximize();
+  const size = wasMaximized
+    ? { width: config.window?.width || 1200, height: config.window?.height || 800 }
+    : bounds;
+  mainWindow.setBounds(centeredBounds(display, size.width, size.height));
   if (wasMaximized) mainWindow.maximize();
   return true;
+}
+
+function fillsWorkArea(bounds, area) {
+  const near = (a, b) => Math.abs(a - b) <= 2;
+  return near(bounds.x, area.x) && near(bounds.y, area.y) &&
+    near(bounds.width, area.width) && near(bounds.height, area.height);
 }
 
 // ─── Dark theme for Meet's home page ───────────────────────────────────────
