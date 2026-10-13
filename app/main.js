@@ -325,6 +325,7 @@ function saveConfig(next) {
     applyWindowPrefs();
     applyDockPrefs();
     applyMeetTheme();
+    applyScreenPrefs();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -630,6 +631,34 @@ function placePresentationWindow(win) {
   const display = placement.display || screen.getDisplayMatching(current);
   const bounds = presentationBoundsOn(display, placement, current);
   if (bounds) win.setBounds(bounds);
+}
+
+// Settings changes take effect at once, like the other window preferences,
+// so picking a screen moves the window and shows it worked. Also the answer
+// to a display being plugged in after launch and to the View menu command.
+function applyScreenPrefs() {
+  placeMainWindow();
+  if (presentationWindowOpen()) placePresentationWindow(presentationWin);
+}
+
+function screensConfigured() {
+  return !!(config.screens?.mainWindow || config.screens?.presentationWindow);
+}
+
+// Display geometry keeps shifting for a moment after a monitor connects
+// (macOS re-arranges, then re-arranges again), so let it settle first.
+const DISPLAY_SETTLE_MS = 1500;
+let displaySettleTimer = null;
+
+function onDisplaysChanged() {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.webContents.send('screens:changed', listDisplays());
+  }
+  if (displaySettleTimer) clearTimeout(displaySettleTimer);
+  displaySettleTimer = setTimeout(() => {
+    displaySettleTimer = null;
+    applyScreenPrefs();
+  }, DISPLAY_SETTLE_MS);
 }
 
 // Identifying it by title would mean matching "Presentation Window", which Meet
@@ -2415,6 +2444,10 @@ ipcMain.handle('config:get', () => {
   return JSON.parse(JSON.stringify(config));
 });
 
+// Connected displays, for the Screens tab. The main process decides what a
+// display is called; the renderer only draws the list.
+ipcMain.handle('screens:list', () => listDisplays());
+
 ipcMain.handle('config:save', (_e, next) => {
   if (!next || typeof next !== 'object') return { ok: false, error: 'Invalid config' };
   const result = saveConfig(next);
@@ -2484,6 +2517,8 @@ function buildMenu() {
         { role: 'zoomOut' },
         { type: 'separator' },
         { label: 'Pop Out / Re-dock Presentation', click: () => togglePresentationWindow() },
+        // For windows dragged elsewhere, or a screen that came back.
+        { label: 'Move Windows to Their Screens', visible: screensConfigured(), click: () => applyScreenPrefs() },
         { label: 'Present a Browser Tab\u2026', visible: presentTabEnabled(), click: () => presentInBrowser() },
         { type: 'separator' },
         { role: 'togglefullscreen' }
@@ -2712,6 +2747,10 @@ if (!gotLock) {
 
     // OS light/dark switches reach the page live, no reload.
     nativeTheme.on('updated', () => applyMeetTheme());
+    // A configured screen that shows up after launch (docking a laptop) gets
+    // its windows; Settings sees the new list either way.
+    screen.on('display-added', onDisplaysChanged);
+    screen.on('display-removed', onDisplaysChanged);
 
     buildMenu();
     createWindow();
