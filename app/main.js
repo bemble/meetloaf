@@ -344,78 +344,61 @@ function applyWindowPrefs() {
 //
 // Meet's home page and pre-join screen only come in light; Google ships no
 // dark theme for Meet on the web, and the page ignores prefers-color-scheme
-// even though Electron passes the OS setting through. Rather than maintain a
-// hand-written stylesheet against Meet's ever-changing class names, Dark
-// Reader's dynamic engine (MIT) runs in the page and derives a dark theme from
-// Meet's own styles at runtime. It's enabled whenever the OS is in dark mode
-// and we're not connected to a call — the in-call UI is already dark and is
-// left alone, as are <video> elements everywhere.
+// even though Electron passes the OS setting through. So while the OS is in
+// dark mode we turn on Chromium's own auto dark mode for the Meet window —
+// the engine behind Chrome's "Auto Dark Mode for Web Contents" flag and the
+// DevTools "Emulate auto dark mode" toggle. It's a paint-time filter: light
+// backgrounds are darkened and dark text lightened, while images, video and
+// anything already dark (Meet's in-call UI) are left as they are. The page
+// sees none of it — no injected code, no rewritten styles, nothing for Meet's
+// Trusted Types policy to object to — and pages that support a dark scheme
+// of their own, like Google's sign-in, are skipped by Chromium itself.
 //
-// Dark Reader lives in the preload (main-preload.js), which is the only hook
-// that runs before Meet's first paint; anything later flashes the page light
-// on every load. Main owns the decision and pushes it to the preload; the
-// preload owns Dark Reader and the theme constants.
-
-// A sandboxed preload can't read files, and Electron only takes a preload as a
-// path, so the real preload is assembled here at launch: Dark Reader's source
-// in front of main-preload.js, written to userData. Dark Reader's UMD wrapper
-// is steered to its browser-global branch by shadowing the CommonJS names.
-let meetPreloadPath = null;
-function buildMeetPreload() {
-  if (meetPreloadPath) return meetPreloadPath;
-  const plain = path.join(__dirname, 'main-preload.js');
-  try {
-    const darkReader = fs.readFileSync(require.resolve('darkreader/darkreader.js'), 'utf8');
-    const preload = fs.readFileSync(plain, 'utf8');
-    const bundle = `;(function () {\nvar module, exports, define;\n${darkReader}\n}).call(window);\n${preload}`;
-    const out = path.join(app.getPath('userData'), 'meet-preload.js');
-    fs.writeFileSync(out, bundle);
-    meetPreloadPath = out;
-  } catch (err) {
-    // Without the bundle the preload still runs, just without a dark theme.
-    console.warn('Dark theme preload could not be built:', err.message);
-    meetPreloadPath = plain;
-  }
-  return meetPreloadPath;
-}
+// It's switched per window at runtime over the DevTools protocol
+// (Emulation.setAutoDarkModeOverride), which is what lets it follow the OS
+// theme live. The equivalent command-line switch (blink-settings
+// forceDarkModeEnabled) is app-wide and launch-only.
 
 function meetDarkThemeEnabled() {
   return config.window?.meetDarkTheme !== false;
 }
 
-// Only Meet itself and the signed-out landing page it bounces to. Google's
-// sign-in pages render fine in dark mode on their own and are best not touched.
-function meetThemeHost(url) {
-  try {
-    const h = new URL(url).hostname;
-    return h === 'meet.google.com' || h === 'workspace.google.com';
-  } catch {
-    return false;
-  }
-}
-
 function meetDarkWanted() {
-  // phaseObserved rather than phase: the confirmation window that keeps Home
-  // Assistant from firing on a DOM blip would here mean a second of darkened
-  // in-call UI, and nothing is lost by switching early.
-  return meetDarkThemeEnabled() && nativeTheme.shouldUseDarkColors && phaseObserved !== 'in_call';
+  return meetDarkThemeEnabled() && nativeTheme.shouldUseDarkColors;
 }
 
 // Window background behind the page while it loads. Matching the theme avoids
-// a white flash in dark mode; Dark Reader's default dark background is close.
+// a white flash in dark mode; #121212 is what Chromium's filter makes of white.
 function mainWindowBackground() {
-  return meetDarkThemeEnabled() && nativeTheme.shouldUseDarkColors ? '#181a1b' : '#ffffff';
+  return meetDarkWanted() ? '#121212' : '#ffffff';
 }
 
-// Pushes the current want to the preload, which enables or disables Dark
-// Reader to match. Idempotent on both ends — every trigger (OS theme change,
-// call phase change, settings save) goes through here.
+// Idempotent: makes the Meet window's dark mode match the current want. Every
+// trigger (window creation, OS theme change, settings save, navigation,
+// renderer restart) goes through here. The DevTools session is only opened
+// when dark is wanted, and closed again when it isn't, so light-mode users
+// never have one; closing it also drops the override. Once the renderer has
+// acknowledged the override it is part of the session's state and is carried
+// across navigations and renderer swaps, so each new document paints dark
+// from its first frame. Resolves once the renderer has acknowledged.
 function applyMeetTheme() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return Promise.resolve();
   const wc = mainWindow.webContents;
-  if (!meetThemeHost(wc.getURL())) return;
+  const want = meetDarkWanted();
   mainWindow.setBackgroundColor(mainWindowBackground());
-  wc.send('main:meet-dark', meetDarkWanted());
+  const dbg = wc.debugger;
+  if (!want) {
+    if (dbg.isAttached()) dbg.detach();
+    return Promise.resolve();
+  }
+  try {
+    if (!dbg.isAttached()) dbg.attach('1.3');
+  } catch (err) {
+    console.warn('Dark theme: could not attach to the Meet window:', err.message);
+    return Promise.resolve();
+  }
+  return dbg.sendCommand('Emulation.setAutoDarkModeOverride', { enabled: true })
+    .catch((err) => console.warn('Dark theme: override failed:', err.message));
 }
 
 // ─── Presentation pop-out window ───────────────────────────────────────────
@@ -624,9 +607,7 @@ function phaseIsPresent(p) {
 // a momentary DOM blip cancels itself instead of firing automations.
 function observePhase(raw, source) {
   const next = effectivePhase(raw);
-  const observedChanged = next !== phaseObserved;
   phaseObserved = next;
-  if (observedChanged) applyMeetTheme();
   if (next === phase) {
     clearPhaseConfirm();
     return;
@@ -646,7 +627,6 @@ function commitPhase(next, reason) {
   clearPhaseConfirm();
   phase = next;
   phaseObserved = next;
-  applyMeetTheme();
 
   // Always-on-top tracks being *connected* — the lobby doesn't need to float,
   // regardless of when the user wants automations to fire.
@@ -1007,14 +987,6 @@ ipcMain.on('main:meeting-phase', (e, raw) => {
   // transient windows Meet opens.
   if (e.sender !== mainWindow.webContents) return;
   observePhase(typeof raw === 'string' ? raw : 'unknown', 'dom');
-});
-
-// The preload asks this, synchronously, as each Meet document is created —
-// before its first paint. Only the Meet window gets a dark theme; popups it
-// opens inherit the preload but are answered "no".
-ipcMain.on('main:meet-dark-wanted', (e) => {
-  e.returnValue = !!mainWindow && !mainWindow.isDestroyed() &&
-    e.sender === mainWindow.webContents && meetDarkWanted();
 });
 
 // Triggered by the injected "MeetLoaf Settings" link in Meet's own modal.
@@ -1480,7 +1452,7 @@ function createWindow() {
     backgroundColor: mainWindowBackground(),
     alwaysOnTop: !!config.window?.alwaysOnTop,
     webPreferences: {
-      preload: buildMeetPreload(),
+      preload: path.join(__dirname, 'main-preload.js'),
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false
@@ -1490,8 +1462,19 @@ function createWindow() {
   mainWindow.webContents.setUserAgent(USER_AGENT);
   // Open straight to a deep-linked meeting if one was queued before the
   // window existed; otherwise the Meet home page.
-  mainWindow.loadURL(pendingDeepLink || MEET_URL);
+  //
+  // Not before the dark-mode override has been acknowledged, though. The
+  // override only becomes part of the session's state once the renderer has
+  // confirmed it, and a navigation that commits first takes the window back
+  // to light: the signed-in Meet home page is served by Meet's service worker
+  // and commits within a few milliseconds, which beats the round trip. The
+  // wait is bounded so a wedged renderer can't hold the window blank.
+  const initialUrl = pendingDeepLink || MEET_URL;
   pendingDeepLink = null;
+  Promise.race([applyMeetTheme(), new Promise((resolve) => setTimeout(resolve, 1000))])
+    .then(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(initialUrl);
+    });
 
   // Track whether the user is in a meeting (URL matches xxx-yyyy-zzz pattern).
   // Always-on-top is gated on this so it only activates during calls,
@@ -1504,6 +1487,16 @@ function createWindow() {
   mainWindow.webContents.on('render-process-gone', () => {
     cancelInstantCopy('renderer gone');
     commitPhase('away', 'renderer-gone');
+  });
+  // A renderer crash closes the DevTools session and its dark-mode override
+  // with it. Put it back as the replacement renderer starts its first load.
+  mainWindow.webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && meetDarkWanted() && !mainWindow.webContents.debugger.isAttached()) applyMeetTheme();
+  });
+  // Belt and braces: re-assert the override on every main-frame commit. It's
+  // one round trip and a no-op when the session already carries it.
+  mainWindow.webContents.on('did-navigate', () => {
+    if (meetDarkWanted()) applyMeetTheme();
   });
   startPhasePoll();
 

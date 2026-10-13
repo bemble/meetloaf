@@ -344,7 +344,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Dark theme for Meet — same `window` section. Default on.
+  // Match system dark mode in Meet — same `window` section. Default on.
   const meetDarkBtn = document.getElementById('meetDarkTheme');
   if (meetDarkBtn) {
     meetDarkBtn.classList.toggle('checked', cfg.window?.meetDarkTheme !== false);
