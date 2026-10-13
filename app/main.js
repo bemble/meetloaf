@@ -385,6 +385,95 @@ function applyWindowPrefs() {
   }
 }
 
+// ─── Screens ───────────────────────────────────────────────────────────────
+//
+// Which display the Meet window and the presentation pop-out open on, for
+// people with more than one. Everything here runs after app ready, which is
+// when Electron's screen module becomes usable.
+
+function describeDisplay(d) {
+  const primary = screen.getPrimaryDisplay();
+  return {
+    id: d.id,
+    label: d.label || '',
+    primary: d.id === primary.id,
+    internal: !!d.internal,
+    width: d.size.width,
+    height: d.size.height
+  };
+}
+
+function listDisplays() {
+  return screen.getAllDisplays().map(describeDisplay);
+}
+
+// Stored { label, id } → connected display, or null when it isn't connected
+// or nothing is configured. The id is tried first because it tells twin
+// monitors apart; the label second because it outlives the id, which changes
+// across reboots on Windows. An id that now belongs to a differently-named
+// monitor has been recycled and is ignored.
+function findDisplay(ref) {
+  if (!ref) return null;
+  const displays = screen.getAllDisplays();
+  if (ref.id !== null) {
+    const byId = displays.find((d) => d.id === ref.id);
+    if (byId && (!ref.label || byId.label === ref.label)) return byId;
+  }
+  if (ref.label) {
+    const byLabel = displays.find((d) => d.label === ref.label);
+    if (byLabel) return byLabel;
+  }
+  return null;
+}
+
+// width × height centred in the display's work area, shrunk to fit. The
+// result is always within that display, so a window can't end up somewhere
+// the user can't reach.
+function centeredBounds(display, width, height) {
+  const area = display.workArea;
+  const w = Math.min(Math.round(width), area.width);
+  const h = Math.min(Math.round(height), area.height);
+  return {
+    x: area.x + Math.round((area.width - w) / 2),
+    y: area.y + Math.round((area.height - h) / 2),
+    width: w,
+    height: h
+  };
+}
+
+function mainWindowDisplay() {
+  return findDisplay(config.screens?.mainWindow);
+}
+
+// Bounds for a new Meet window. Without a configured (and connected) screen
+// the OS picks the position, as it always did.
+function mainWindowInitialBounds() {
+  const width = config.window?.width || 1200;
+  const height = config.window?.height || 800;
+  const display = mainWindowDisplay();
+  return display ? centeredBounds(display, width, height) : { width, height };
+}
+
+// Move the Meet window onto its configured screen, keeping its size. No-op
+// when nothing is configured, the screen isn't connected, or the window is
+// already there. A full-screen window lives on its own Space and is left
+// alone. Returns whether it moved.
+function placeMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  const display = mainWindowDisplay();
+  if (!display) return false;
+  if (mainWindow.isFullScreen()) return false;
+  if (screen.getDisplayMatching(mainWindow.getBounds()).id === display.id) return false;
+  // Maximized fills whichever screen the window is on, so un-maximize, move,
+  // and maximize again over there.
+  const wasMaximized = mainWindow.isMaximized();
+  if (wasMaximized) mainWindow.unmaximize();
+  const { width, height } = mainWindow.getBounds();
+  mainWindow.setBounds(centeredBounds(display, width, height));
+  if (wasMaximized) mainWindow.maximize();
+  return true;
+}
+
 // ─── Dark theme for Meet's home page ───────────────────────────────────────
 //
 // Meet's home page and pre-join screen only come in light; Google ships no
@@ -1505,8 +1594,9 @@ function createWindow() {
   }
 
   mainWindow = new BrowserWindow({
-    width: config.window?.width || 1200,
-    height: config.window?.height || 800,
+    // Size from config; position too when a screen is configured, so the
+    // window appears there rather than opening somewhere and jumping.
+    ...mainWindowInitialBounds(),
     // The inset traffic-light look is macOS-only. Elsewhere, hiding the
     // title bar removes the close/minimise/maximise buttons entirely, so
     // keep the native frame and tuck the menu bar behind Alt.
@@ -1529,6 +1619,9 @@ function createWindow() {
       nodeIntegration: false
     }
   });
+
+  // After placement: maximize fills the screen the window is on.
+  if (config.window?.startMaximized) mainWindow.maximize();
 
   mainWindow.webContents.setUserAgent(USER_AGENT);
   // Open straight to a deep-linked meeting if one was queued before the
