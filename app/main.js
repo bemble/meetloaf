@@ -591,6 +591,47 @@ function presentationWindowOpen() {
   return !!(presentationWin && !presentationWin.isDestroyed());
 }
 
+// Where the presentation window goes, from the Screens settings. null means
+// nothing is configured that applies right now — Meet's own placement stands.
+// `display` is null when a size is set but no screen (or the screen isn't
+// connected): the window then stays on whichever screen Meet opened it on.
+function presentationPlacement() {
+  const s = config.screens || {};
+  const display = findDisplay(s.presentationWindow);
+  const size = s.presentationSize || 'default';
+  if (!display && size === 'default') return null;
+  return { display, size, width: s.presentationWidth, height: s.presentationHeight };
+}
+
+// Meet opens the presentation window itself, at a size of its choosing. The
+// next window.open from the Meet page while in a call with nothing popped out
+// is that window, so this is where the open handler finds out whether to
+// intervene. Mid-call auth popups are https and never reach it.
+function expectingPresentationWindow() {
+  return phase === 'in_call' && !presentationWindowOpen() && presentationPlacement() !== null;
+}
+
+// Bounds for a window on `display` under the configured size, or null when
+// only the window's own size will do (and it doesn't exist yet).
+function presentationBoundsOn(display, placement, currentBounds) {
+  if (placement.size === 'fill') return { ...display.workArea };
+  if (placement.size === 'custom') return centeredBounds(display, placement.width, placement.height);
+  if (!currentBounds) return null;
+  return centeredBounds(display, currentBounds.width, currentBounds.height);
+}
+
+// Put an existing presentation window where the settings say. Safe to call
+// on one that is already there; setBounds with the same rect is a no-op.
+function placePresentationWindow(win) {
+  if (!win || win.isDestroyed()) return;
+  const placement = presentationPlacement();
+  if (!placement) return;
+  const current = win.getBounds();
+  const display = placement.display || screen.getDisplayMatching(current);
+  const bounds = presentationBoundsOn(display, placement, current);
+  if (bounds) win.setBounds(bounds);
+}
+
 // Identifying it by title would mean matching "Presentation Window", which Meet
 // localises. During a call the only child windows are the auth popup and this
 // one, so the newest non-auth child is it — and if a transient popup does slip
@@ -598,6 +639,10 @@ function presentationWindowOpen() {
 function adoptPresentationWindow(win) {
   presentationWin = win;
   presentationWinSawShare = false;
+  // The open handler may have held the window back (show: false) so it could
+  // be placed before anyone saw it; either way it ends up visible.
+  placePresentationWindow(win);
+  if (!win.isVisible()) win.show();
   win.on('closed', () => {
     if (presentationWin !== win) return;
     presentationWin = null;
@@ -1739,6 +1784,18 @@ function createWindow() {
     // in-app — handing these to shell.openExternal throws "No application
     // found to open URL" (macOS has no handler for about:blank).
     if (!/^https?:\/\//i.test(url)) {
+      // A presentation window with a configured screen or size: keep it
+      // hidden until adoptPresentationWindow() has placed it, so it doesn't
+      // open at Meet's position and then jump. The bounds go in here too when
+      // they don't depend on Meet's size, which spares a resize as well;
+      // these override the features string Meet passed to window.open.
+      if (expectingPresentationWindow()) {
+        const placement = presentationPlacement();
+        const display = placement.display ||
+          screen.getDisplayMatching(mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : { x: 0, y: 0, width: 1, height: 1 });
+        const bounds = presentationBoundsOn(display, placement, null);
+        return { action: 'allow', overrideBrowserWindowOptions: { show: false, ...(bounds || {}) } };
+      }
       return { action: 'allow' };
     }
     // Real external links go to the user's browser.
