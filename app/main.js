@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut, session, dialog, shell, ipcMain, nativeTheme, desktopCapturer, clipboard, Notification, net, systemPreferences, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut, session, dialog, shell, ipcMain, nativeTheme, desktopCapturer, clipboard, Notification, net, systemPreferences, powerSaveBlocker, screen } = require('electron');
 
 const path = require('path');
 const fs = require('fs');
@@ -83,7 +83,7 @@ let inMeeting = false;
 // We stash the resolved target here so createWindow() opens it as the initial
 // page instead of the Meet home page.
 let pendingDeepLink = null;
-let config = { shortcuts: {}, window: { width: 1200, height: 800 }, homeAssistant: {} };
+let config = { shortcuts: {}, window: { width: 1200, height: 800 }, screens: {}, homeAssistant: {} };
 
 // Built-in shortcut defaults. Seeded into every loaded config so that keys
 // absent from an existing config.json (e.g. after an upgrade) still get their
@@ -152,7 +152,10 @@ const WINDOW_DEFAULTS = {
   // macOS only: run as a menu-bar app with no Dock icon. Ignored elsewhere.
   hideDock: false,
   // Darken Meet's home page and pre-join screen while the OS is in dark mode.
-  meetDarkTheme: true
+  meetDarkTheme: true,
+  // Open the Meet window maximized (zoomed on macOS) rather than at
+  // width × height. The size still applies once the window is un-maximized.
+  startMaximized: false
 };
 
 function normalizeWindow(raw) {
@@ -165,6 +168,46 @@ function normalizeWindow(raw) {
   out.presentBrowserTab = src.presentBrowserTab !== false;
   out.hideDock = src.hideDock === true;
   out.meetDarkTheme = src.meetDarkTheme !== false;
+  out.startMaximized = src.startMaximized === true;
+  return out;
+}
+
+// Which display each window opens on, for people with more than one. A
+// screen is stored as { label, id } — the label is what the OS calls the
+// monitor ("LG ULTRAFINE"), the id is Electron's display id. Both are kept
+// because neither is reliable alone: ids change across reboots on Windows,
+// and two identical monitors share a label. null means "wherever the OS
+// puts it", which is what happened before this setting existed, so an
+// upgraded config changes nothing.
+const PRESENTATION_SIZES = ['default', 'fill', 'custom'];
+const SCREENS_DEFAULTS = {
+  mainWindow: null,
+  presentationWindow: null,
+  // 'default' leaves Meet's own size alone, 'fill' maximizes the window on
+  // its screen, 'custom' uses presentationWidth × presentationHeight.
+  presentationSize: 'default',
+  presentationWidth: 1280,
+  presentationHeight: 800
+};
+
+function normalizeScreenRef(raw) {
+  // A bare string is a label, for hand-edited configs.
+  if (typeof raw === 'string') return raw.trim() ? { label: raw.trim(), id: null } : null;
+  if (!raw || typeof raw !== 'object') return null;
+  const label = typeof raw.label === 'string' ? raw.label.trim() : '';
+  const id = Number.isFinite(raw.id) ? raw.id : null;
+  if (!label && id === null) return null;
+  return { label, id };
+}
+
+function normalizeScreens(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const out = { ...SCREENS_DEFAULTS };
+  out.mainWindow = normalizeScreenRef(src.mainWindow);
+  out.presentationWindow = normalizeScreenRef(src.presentationWindow);
+  if (PRESENTATION_SIZES.includes(src.presentationSize)) out.presentationSize = src.presentationSize;
+  if (Number.isFinite(src.presentationWidth) && src.presentationWidth > 0) out.presentationWidth = Math.round(src.presentationWidth);
+  if (Number.isFinite(src.presentationHeight) && src.presentationHeight > 0) out.presentationHeight = Math.round(src.presentationHeight);
   return out;
 }
 
@@ -258,6 +301,7 @@ function loadConfig() {
       ...config,
       ...parsed,
       window: normalizeWindow(parsed.window),
+      screens: normalizeScreens(parsed.screens),
       shortcuts: normalizeShortcuts(parsed.shortcuts),
       homeAssistant: normalizeHomeAssistant(parsed.homeAssistant)
     };
@@ -274,6 +318,7 @@ function saveConfig(next) {
       ...config,
       ...next,
       window: normalizeWindow(next.window),
+      screens: normalizeScreens(next.screens),
       shortcuts: normalizeShortcuts(next.shortcuts),
       homeAssistant: normalizeHomeAssistant(next.homeAssistant)
     };
