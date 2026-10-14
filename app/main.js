@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut, session, dialog, shell, ipcMain, nativeTheme, desktopCapturer, clipboard, Notification, net, systemPreferences, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut, session, dialog, shell, ipcMain, nativeTheme, desktopCapturer, clipboard, Notification, net, systemPreferences, powerSaveBlocker, powerMonitor, screen } = require('electron');
 
 const path = require('path');
 const fs = require('fs');
@@ -362,6 +362,9 @@ function applyWindowPrefs() {
 function meetDarkThemeEnabled() {
   return config.window?.meetDarkTheme !== false;
 }
+
+// How long after a wake, unlock or display change to re-send the override.
+const MEET_THEME_RESUME_MS = 2000;
 
 function meetDarkWanted() {
   return meetDarkThemeEnabled() && nativeTheme.shouldUseDarkColors;
@@ -1524,6 +1527,17 @@ function createWindow() {
   mainWindow.webContents.on('did-navigate', () => {
     if (meetDarkWanted()) applyMeetTheme();
   });
+  // The override lives in the debugger session, so it goes when the session
+  // does — a renderer swap Chromium couldn't carry it across, DevTools being
+  // opened on the window, a wake from a long sleep. Short of a navigation
+  // nothing above would notice, and the page would sit there in light.
+  // Deferred so that DevTools, if that's what took the session, has settled;
+  // if it still holds the window the re-attach fails and is logged, no worse.
+  mainWindow.webContents.debugger.on('detach', (_e, reason) => {
+    if (!meetDarkWanted()) return;
+    console.log(`[meetloaf] dark theme session detached (${reason}), re-applying`);
+    setTimeout(() => applyMeetTheme(), 1000);
+  });
   startPhasePoll();
 
   // Inject a thin draggable strip across the top of every Meet page so the
@@ -2517,6 +2531,15 @@ if (!gotLock) {
 
     // OS light/dark switches reach the page live, no reload.
     nativeTheme.on('updated', () => applyMeetTheme());
+    // Coming back from a long sleep the page has been seen in light, with no
+    // navigation and no theme change to hook. Whatever Chromium lost along
+    // the way, re-sending the override is one round trip and a no-op when
+    // nothing was. The delay lets the renderer and displays come back first;
+    // a display returning later gets its own re-apply below.
+    const reapplyMeetThemeLater = () => setTimeout(() => applyMeetTheme(), MEET_THEME_RESUME_MS);
+    powerMonitor.on('resume', reapplyMeetThemeLater);
+    powerMonitor.on('unlock-screen', reapplyMeetThemeLater);
+    screen.on('display-added', reapplyMeetThemeLater);
 
     buildMenu();
     createWindow();
