@@ -153,9 +153,9 @@ const WINDOW_DEFAULTS = {
   hideDock: false,
   // Darken Meet's home page and pre-join screen while the OS is in dark mode.
   meetDarkTheme: true,
-  // Open the Meet window maximized (zoomed on macOS) rather than at
-  // width × height. The size still applies once the window is un-maximized.
-  startMaximized: false
+  // Open the Meet window in full screen rather than at width × height. The
+  // size still applies once it leaves full screen.
+  startFullScreen: false
 };
 
 function normalizeWindow(raw) {
@@ -168,7 +168,7 @@ function normalizeWindow(raw) {
   out.presentBrowserTab = src.presentBrowserTab !== false;
   out.hideDock = src.hideDock === true;
   out.meetDarkTheme = src.meetDarkTheme !== false;
-  out.startMaximized = src.startMaximized === true;
+  out.startFullScreen = src.startFullScreen === true;
   return out;
 }
 
@@ -457,16 +457,34 @@ function mainWindowInitialBounds() {
 
 // Move the Meet window onto its configured screen, keeping its size. No-op
 // when nothing is configured, the screen isn't connected, or the window is
-// already there. A full-screen window lives on its own Space and is left
-// alone. Returns whether it moved.
+// already there. Returns whether it moved.
+const FULL_SCREEN_SETTLE_MS = 250;
+
 function placeMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   const display = mainWindowDisplay();
   if (!display) return false;
-  if (mainWindow.isFullScreen()) return false;
   const bounds = mainWindow.getBounds();
   const current = screen.getDisplayMatching(bounds);
   if (current.id === display.id) return false;
+  // A full-screen window owns its screen (its own Space on macOS) and can't
+  // be moved as such: leave full screen, move once that has finished — the
+  // transition is animated and asynchronous — and go full screen over there.
+  if (mainWindow.isFullScreen()) {
+    const win = mainWindow;
+    win.once('leave-full-screen', () => {
+      // AppKit puts the pre-full-screen frame back after this fires, which
+      // would undo a move made right away, so let that land first.
+      setTimeout(() => {
+        if (win.isDestroyed() || win.isFullScreen()) return;
+        const { width, height } = win.getBounds();
+        win.setBounds(centeredBounds(display, width, height));
+        win.setFullScreen(true);
+      }, FULL_SCREEN_SETTLE_MS);
+    });
+    win.setFullScreen(false);
+    return true;
+  }
   // Maximized fills whichever screen the window is on, so a maximized window
   // is moved at its configured size and maximized again over there.
   // isMaximized() alone doesn't cut it on macOS: for a zoomed window it asks
@@ -1707,8 +1725,8 @@ function createWindow() {
     }
   });
 
-  // After placement: maximize fills the screen the window is on.
-  if (config.window?.startMaximized) mainWindow.maximize();
+  // After placement: full screen takes over the screen the window is on.
+  if (config.window?.startFullScreen) mainWindow.setFullScreen(true);
 
   mainWindow.webContents.setUserAgent(USER_AGENT);
   // Open straight to a deep-linked meeting if one was queued before the

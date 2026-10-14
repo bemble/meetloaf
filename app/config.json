@@ -35,7 +35,7 @@
     "height": 800,
     "alwaysOnTop": false,
     "popOutPresentation": true,
-    "startMaximized": false
+    "startFullScreen": false
   },
   "screens": {
     "mainWindow": null,

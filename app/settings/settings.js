@@ -359,15 +359,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Start maximized — same `window` section. Default off.
-  const startMaxBtn = document.getElementById('startMaximized');
-  if (startMaxBtn) {
-    startMaxBtn.classList.toggle('checked', cfg.window?.startMaximized === true);
-    startMaxBtn.addEventListener('click', (e) => {
+  // Start in full screen — same `window` section. Default off.
+  const startFsBtn = document.getElementById('startFullScreen');
+  if (startFsBtn) {
+    startFsBtn.classList.toggle('checked', cfg.window?.startFullScreen === true);
+    startFsBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const next = !startMaxBtn.classList.contains('checked');
-      startMaxBtn.classList.toggle('checked', next);
-      state.raw.window = { ...(state.raw.window || {}), startMaximized: next };
+      const next = !startFsBtn.classList.contains('checked');
+      startFsBtn.classList.toggle('checked', next);
+      state.raw.window = { ...(state.raw.window || {}), startFullScreen: next };
       persistRaw();
     });
   }

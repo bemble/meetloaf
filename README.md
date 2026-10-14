@@ -197,7 +197,7 @@ Under the hood it writes `~/.config/meetloaf/config.json` (or `$XDG_CONFIG_HOME/
     "presentTab": "Cmd+Shift+P",
     "leave": { "accelerator": "Cmd+W", "global": false }
   },
-  "window": { "width": 1200, "height": 800, "startMaximized": false, "popOutPresentation": true, "presentBrowserTab": true, "hideDock": false, "meetDarkTheme": true },
+  "window": { "width": 1200, "height": 800, "startFullScreen": false, "popOutPresentation": true, "presentBrowserTab": true, "hideDock": false, "meetDarkTheme": true },
   "screens": { "mainWindow": null, "presentationWindow": null, "presentationSize": "default", "presentationWidth": 1280, "presentationHeight": 800 }
 }
 ```
@@ -234,14 +234,14 @@ Detection only covers *other people's* presentations — your own share is exclu
 
 ### Screens
 
-With more than one display, **Settings → Screens** chooses where MeetLoaf's windows open: the Meet window on one screen (a teleprompter next to the camera, say) and the presentation pop-out on another, at Meet's own size, filling the screen, or at a fixed width × height centred on it. The tab only appears when two or more displays are connected. Pair it with **Settings → Window → Start maximized** to have the Meet window fill its screen.
+With more than one display, **Settings → Screens** chooses where MeetLoaf's windows open: the Meet window on one screen (a teleprompter next to the camera, say) and the presentation pop-out on another, at Meet's own size, filling the screen, or at a fixed width × height centred on it. The tab only appears when two or more displays are connected. Pair it with **Settings → Window → Start in full screen** to have the Meet window take over its screen.
 
-Changes apply right away, and again when a configured screen is plugged in after launch — the window moves there once the display geometry settles. A window you drag elsewhere stays put; **View → Move Windows to Their Screens** puts everything back. Full-screen windows are left alone.
+Changes apply right away, and again when a configured screen is plugged in after launch — the window moves there once the display geometry settles. A window you drag elsewhere stays put; **View → Move Windows to Their Screens** puts everything back. A full-screen window leaves full screen, moves, and goes full screen again on the other side.
 
 A screen is stored as `{ "label": "LG ULTRAFINE", "id": 2 }`; a bare `"LG ULTRAFINE"` works too when hand-editing. The id tells twin monitors apart and the label survives the id changing, which it does across reboots on Windows. A configured screen that isn't connected shows as *(not connected)* in Settings and the window opens wherever the system puts it until it comes back. `null` means the system decides, which is the default and what every earlier version did.
 
 ```json
-"window": { "startMaximized": true },
+"window": { "startFullScreen": true },
 "screens": {
   "mainWindow": "Elgato Prompter",
   "presentationWindow": "LG ULTRAFINE",
